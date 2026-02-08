@@ -17,11 +17,10 @@ async function main() {
   await token.waitForDeployment();
   console.log("GlueLendToken:", await token.getAddress());
 
-  // 2. Deploy GlueLend with 1% origination fee
-  const originationFee = ethers.parseEther("0.01"); // 1e16 = 1%
+  // 2. Deploy GlueLend (no constructor args — 1% fee is constant)
   const lend = await (
     await ethers.getContractFactory("GlueLend")
-  ).deploy(originationFee);
+  ).deploy();
   await lend.waitForDeployment();
   console.log("GlueLend:", await lend.getAddress());
 

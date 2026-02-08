@@ -14,9 +14,7 @@ contract GlueLend is GluedToolsERC20Base {
         bool active;
     }
 
-    uint256 public originationFee; // in PRECISION units (1e16 = 1%)
-    address public owner;
-    bool public paused;
+    uint256 public constant ORIGINATION_FEE = 1e16; // 1%
 
     mapping(address => bool) public registeredTokens;
     mapping(address => address) public tokenGlue;
@@ -24,56 +22,28 @@ contract GlueLend is GluedToolsERC20Base {
     mapping(address => mapping(address => LoanPosition)) internal _loans;
     mapping(address => mapping(address => mapping(address => uint256))) internal _collateralOwed;
 
-    error NotOwner();
-    error Paused();
     error TokenNotRegistered();
     error NoActiveLoan();
     error CollateralMismatch();
     error ZeroAmount();
     error SlippageExceeded(uint256 index, uint256 received, uint256 minimum);
-    error FeeTooHigh();
 
     event TokenRegistered(address indexed token, address indexed glue);
     event Borrowed(address indexed user, address indexed token, uint256 amount, uint256 fee);
     event Repaid(address indexed user, address indexed token, uint256 tokensMinted);
     event PartialRepaid(address indexed user, address indexed token, uint256 tokensMinted);
-    event OriginationFeeUpdated(uint256 newFee);
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
-
-    modifier whenNotPaused() {
-        if (paused) revert Paused();
-        _;
-    }
-
-    constructor(uint256 _originationFee) {
-        require(_originationFee <= 5e16, "Fee > 5%");
-        originationFee = _originationFee;
-        owner = msg.sender;
-    }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // ADMIN
+    // REGISTER
     // ═══════════════════════════════════════════════════════════════════════
 
-    function registerToken(address token) external onlyOwner {
+    function registerToken(address token) external {
+        require(!registeredTokens[token], "Already registered");
         address glue = _initializeGlue(token);
         registeredTokens[token] = true;
         tokenGlue[token] = glue;
         emit TokenRegistered(token, glue);
     }
-
-    function setOriginationFee(uint256 fee) external onlyOwner {
-        if (fee > 5e16) revert FeeTooHigh();
-        originationFee = fee;
-        emit OriginationFeeUpdated(fee);
-    }
-
-    function pause() external onlyOwner { paused = true; }
-    function unpause() external onlyOwner { paused = false; }
 
     // ═══════════════════════════════════════════════════════════════════════
     // BORROW
@@ -84,7 +54,7 @@ contract GlueLend is GluedToolsERC20Base {
         uint256 amount,
         address[] calldata collaterals,
         uint256[] calldata minOutputs
-    ) external payable whenNotPaused nnrtnt {
+    ) external payable nnrtnt {
         if (!registeredTokens[token]) revert TokenNotRegistered();
         if (amount == 0) revert ZeroAmount();
         require(collaterals.length > 0, "No collaterals");
@@ -136,14 +106,13 @@ contract GlueLend is GluedToolsERC20Base {
         uint256[] memory balsBefore,
         uint256[] calldata minOutputs
     ) internal returns (uint256 totalFee) {
-        uint256 feeRate = originationFee;
         uint256 len = collaterals.length;
 
         for (uint256 i = 0; i < len; i++) {
             uint256 received = _balanceOfAsset(collaterals[i], address(this)) - balsBefore[i];
             if (received == 0) continue;
 
-            totalFee += _processOneCollateral(borrower, token, glue, collaterals[i], received, feeRate, minOutputs[i], i);
+            totalFee += _processOneCollateral(borrower, token, glue, collaterals[i], received, minOutputs[i], i);
         }
     }
 
@@ -153,11 +122,10 @@ contract GlueLend is GluedToolsERC20Base {
         address glue,
         address collateral,
         uint256 received,
-        uint256 feeRate,
         uint256 minOutput,
         uint256 index
     ) internal returns (uint256 fee) {
-        fee = _md512(received, feeRate, PRECISION);
+        fee = _md512(received, ORIGINATION_FEE, PRECISION);
         uint256 userAmount = received - fee;
 
         if (userAmount < minOutput) {
@@ -176,7 +144,7 @@ contract GlueLend is GluedToolsERC20Base {
     // REPAY
     // ═══════════════════════════════════════════════════════════════════════
 
-    function repay(address token) external payable whenNotPaused nnrtnt {
+    function repay(address token) external payable nnrtnt {
         LoanPosition storage pos = _loans[msg.sender][token];
         if (!pos.active) revert NoActiveLoan();
 
@@ -202,7 +170,7 @@ contract GlueLend is GluedToolsERC20Base {
         emit Repaid(msg.sender, token, tokensBurned);
     }
 
-    function partialRepay(address token, uint256 tokenAmount) external payable whenNotPaused nnrtnt {
+    function partialRepay(address token, uint256 tokenAmount) external payable nnrtnt {
         LoanPosition storage pos = _loans[msg.sender][token];
         if (!pos.active) revert NoActiveLoan();
         if (tokenAmount == 0) revert ZeroAmount();
@@ -280,10 +248,9 @@ contract GlueLend is GluedToolsERC20Base {
         uint256[] memory raw = _getCollateralbyAmount(token, amount, collaterals);
         userAmounts = new uint256[](collaterals.length);
         fees = new uint256[](collaterals.length);
-        uint256 feeRate = originationFee;
 
         for (uint256 i = 0; i < collaterals.length; i++) {
-            fees[i] = _md512(raw[i], feeRate, PRECISION);
+            fees[i] = _md512(raw[i], ORIGINATION_FEE, PRECISION);
             userAmounts[i] = raw[i] - fees[i];
         }
     }

@@ -14,7 +14,6 @@ describe("GlueLend", function () {
   let glueAddr: string;
 
   const INITIAL_SUPPLY = ethers.parseEther("1000000"); // 1M
-  const ORIGINATION_FEE = ethers.parseEther("0.01"); // 1% (1e16)
 
   beforeEach(async function () {
     [owner, user, other] = await ethers.getSigners();
@@ -31,7 +30,7 @@ describe("GlueLend", function () {
 
     // Deploy lend contract
     const LendFactory = await ethers.getContractFactory("GlueLend");
-    lend = await LendFactory.deploy(ORIGINATION_FEE);
+    lend = await LendFactory.deploy();
     await lend.waitForDeployment();
     lendAddr = await lend.getAddress();
 
@@ -58,15 +57,17 @@ describe("GlueLend", function () {
       expect(await token.totalSupply()).to.equal(INITIAL_SUPPLY);
     });
 
-    it("should deploy lend contract with correct fee", async function () {
-      expect(await lend.originationFee()).to.equal(ORIGINATION_FEE);
-      expect(await lend.owner()).to.equal(owner.address);
-      expect(await lend.paused()).to.equal(false);
+    it("should have constant 1% origination fee", async function () {
+      expect(await lend.ORIGINATION_FEE()).to.equal(ethers.parseEther("0.01"));
     });
 
     it("should register token correctly", async function () {
       expect(await lend.registeredTokens(tokenAddr)).to.equal(true);
       expect(await lend.tokenGlue(tokenAddr)).to.not.equal(ethers.ZeroAddress);
+    });
+
+    it("should not allow registering same token twice", async function () {
+      await expect(lend.registerToken(tokenAddr)).to.be.reverted;
     });
 
     it("should lock collateral manager", async function () {
@@ -99,12 +100,28 @@ describe("GlueLend", function () {
 
     it("should prevent minting after mint locked", async function () {
       await token.lockMint();
-      // Even the collateral manager can't mint
-      // We need to test this through the lend contract, but since mint is locked
-      // it should fail. Let's test directly:
-      // The lend contract IS the collateral manager, so we can't call mint directly
-      // But we can verify the lock state
       expect(await token.mintLocked()).to.equal(true);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // REGISTER
+  // ═══════════════════════════════════════════════════════════════
+
+  describe("Register", function () {
+    it("should allow anyone to register a new token", async function () {
+      // Deploy a second token from a different account
+      const TokenFactory = await ethers.getContractFactory("GlueLendToken");
+      const token2 = await TokenFactory.connect(user).deploy(
+        ["https://example.com/meta2.json", "Token Two", "TT2"],
+        ethers.parseEther("500000"),
+        user.address
+      );
+      const token2Addr = await token2.getAddress();
+
+      // Anyone can register
+      await lend.connect(other).registerToken(token2Addr);
+      expect(await lend.registeredTokens(token2Addr)).to.equal(true);
     });
   });
 
@@ -134,18 +151,6 @@ describe("GlueLend", function () {
       await expect(
         lend.connect(user).borrow(tokenAddr, ethers.parseEther("1000"), [], [])
       ).to.be.reverted;
-    });
-
-    it("should revert if paused", async function () {
-      await lend.pause();
-      await expect(
-        lend.connect(user).borrow(
-          tokenAddr,
-          ethers.parseEther("1000"),
-          [ethers.ZeroAddress],
-          [0]
-        )
-      ).to.be.revertedWithCustomError(lend, "Paused");
     });
 
     it("should borrow successfully with ETH collateral", async function () {
@@ -346,47 +351,6 @@ describe("GlueLend", function () {
   });
 
   // ═══════════════════════════════════════════════════════════════
-  // ADMIN
-  // ═══════════════════════════════════════════════════════════════
-
-  describe("Admin", function () {
-    it("should allow owner to set origination fee", async function () {
-      const newFee = ethers.parseEther("0.02"); // 2%
-      await lend.setOriginationFee(newFee);
-      expect(await lend.originationFee()).to.equal(newFee);
-    });
-
-    it("should revert fee > 5%", async function () {
-      const badFee = ethers.parseEther("0.06"); // 6%
-      await expect(lend.setOriginationFee(badFee)).to.be.revertedWithCustomError(
-        lend,
-        "FeeTooHigh"
-      );
-    });
-
-    it("should not allow non-owner to set fee", async function () {
-      await expect(
-        lend.connect(user).setOriginationFee(ethers.parseEther("0.01"))
-      ).to.be.revertedWithCustomError(lend, "NotOwner");
-    });
-
-    it("should pause and unpause", async function () {
-      await lend.pause();
-      expect(await lend.paused()).to.equal(true);
-
-      await lend.unpause();
-      expect(await lend.paused()).to.equal(false);
-    });
-
-    it("should not allow non-owner to pause", async function () {
-      await expect(lend.connect(user).pause()).to.be.revertedWithCustomError(
-        lend,
-        "NotOwner"
-      );
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════
   // PREVIEW
   // ═══════════════════════════════════════════════════════════════
 
@@ -439,8 +403,6 @@ describe("GlueLend", function () {
       const glueBalanceAfter = await ethers.provider.getBalance(glueAddr);
 
       // Glue balance should be higher after the cycle due to origination fee
-      // The fee was sent to Glue during borrow, then user repaid full amount to Glue
-      // Net effect: Glue has MORE ETH than before
       expect(glueBalanceAfter).to.be.gt(glueBalanceBefore);
     });
   });
@@ -471,7 +433,6 @@ describe("GlueLend", function () {
       expect(totalSupplyAfter).to.be.lt(totalSupplyBefore);
 
       // Remaining holders now have a larger share of backing
-      // Each token is worth more collateral
     });
   });
 });
